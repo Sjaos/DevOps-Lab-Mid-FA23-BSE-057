@@ -1,3 +1,4 @@
+
 # CSC418 Assignment Submission Portal
 
 A small Flask portal for assignment-link submissions, with automated tests, a
@@ -105,3 +106,5 @@ portal. The workflow run's deployment step provides the published URL.
 - `receiver/receiver.py`: localhost JSON receiver
 - `.github/workflows/ci.yml`: CI, report artifact, optional email, and Pages deployment
 - `site/`: static Pages demonstration
+
+
