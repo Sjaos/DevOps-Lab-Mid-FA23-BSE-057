@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+pytest-report.json
+test-report.json
+receiver.log
+receiver-error.log

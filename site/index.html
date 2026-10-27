@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="CSC418 assignment submission portal demo">
+    <title>CSC418 Assignment Submission Portal</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 40px 20px;
+            color: #1f2937;
+            background: #f4f7fb;
+            font-family: Arial, sans-serif;
+        }
+        main {
+            width: 100%;
+            max-width: 900px;
+            margin: auto;
+            padding: 30px;
+            border-radius: 12px;
+            background: #fff;
+            box-shadow: 0 4px 18px rgba(0, 0, 0, .08);
+        }
+        h1 { margin-bottom: 5px; color: #1d4ed8; }
+        .subtitle { margin-bottom: 30px; color: #6b7280; }
+        form { display: grid; gap: 10px; margin-bottom: 35px; }
+        label { margin-top: 8px; font-weight: bold; }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+        }
+        button {
+            margin-top: 15px;
+            padding: 13px;
+            border: 0;
+            border-radius: 6px;
+            color: white;
+            background: #2563eb;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #1d4ed8; }
+        .message { margin: 15px 0; padding: 12px; border-radius: 6px; }
+        .success { color: #166534; background: #dcfce7; }
+        .error { color: #991b1b; background: #fee2e2; }
+        .table-wrapper { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            text-align: left;
+        }
+        th { background: #f8fafc; }
+        a { color: #2563eb; }
+        @media (max-width: 600px) {
+            body { padding: 20px 12px; }
+            main { padding: 20px; }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>CSC418 Assignment Submission Portal</h1>
+    <p class="subtitle">DevOps Lab Midterm — static demonstration</p>
+
+    <form id="submission-form">
+        <label for="student-name">Student Name</label>
+        <input id="student-name" name="student_name" required>
+
+        <label for="registration-number">Registration Number</label>
+        <input id="registration-number" name="registration_number" required>
+
+        <label for="assignment-title">Assignment Title</label>
+        <input id="assignment-title" name="assignment_title" required>
+
+        <label for="submission-url">Submission URL</label>
+        <input id="submission-url" name="submission_url" type="url"
+               placeholder="https://github.com/..." required>
+
+        <button type="submit">Submit Assignment</button>
+    </form>
+
+    <div id="message" aria-live="polite"></div>
+    <h2>Saved Submissions</h2>
+    <div id="submissions"></div>
+</main>
+<script>
+    const storageKey = "csc418-submissions";
+    const form = document.querySelector("#submission-form");
+    const message = document.querySelector("#message");
+    const list = document.querySelector("#submissions");
+
+    function renderSubmissions() {
+        const submissions = JSON.parse(localStorage.getItem(storageKey) || "[]");
+        list.replaceChildren();
+        if (!submissions.length) {
+            list.textContent = "No submissions yet.";
+            return;
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "table-wrapper";
+        const table = document.createElement("table");
+        table.innerHTML = "<thead><tr><th>Name</th><th>Registration</th>" +
+            "<th>Assignment</th><th>URL</th></tr></thead><tbody></tbody>";
+        const body = table.querySelector("tbody");
+
+        for (const submission of submissions) {
+            const row = body.insertRow();
+            for (const value of [
+                submission.student_name,
+                submission.registration_number,
+                submission.assignment_title
+            ]) {
+                row.insertCell().textContent = value;
+            }
+            const linkCell = row.insertCell();
+            const link = document.createElement("a");
+            link.href = submission.submission_url;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = "Open";
+            linkCell.append(link);
+        }
+
+        wrapper.append(table);
+        list.append(wrapper);
+    }
+
+    form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const data = new FormData(form);
+        const url = String(data.get("submission_url")).trim();
+        let parsedUrl;
+        try {
+            parsedUrl = new URL(url);
+        } catch {
+            parsedUrl = null;
+        }
+
+        if (!parsedUrl || !["http:", "https:"].includes(parsedUrl.protocol)) {
+            message.className = "message error";
+            message.textContent = "Please enter a valid http/https URL.";
+            return;
+        }
+
+        const submissions = JSON.parse(localStorage.getItem(storageKey) || "[]");
+        submissions.push({
+            student_name: String(data.get("student_name")).trim(),
+            registration_number: String(data.get("registration_number")).trim(),
+            assignment_title: String(data.get("assignment_title")).trim(),
+            submission_url: url
+        });
+        localStorage.setItem(storageKey, JSON.stringify(submissions));
+        form.reset();
+        message.className = "message success";
+        message.textContent = "Submission saved successfully in this browser.";
+        renderSubmissions();
+    });
+
+    renderSubmissions();
+</script>
+</body>
+</html>

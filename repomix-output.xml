@@ -1,0 +1,1396 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  workflows/
+    ci.yml
+receiver/
+  receiver.py
+scripts/
+  build_report.py
+  send_email.py
+site/
+  index.html
+static/
+  style.css
+templates/
+  index.html
+tests/
+  test_app.py
+  test_reports.py
+.gitignore
+app.py
+README.md
+requirements.txt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".github/workflows/ci.yml">
+name: Assignment Portal CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, windows]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests and send report to localhost
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          REPORT_RECEIVER_URL: http://127.0.0.1:9000/report
+        shell: pwsh
+        run: |
+          $receiver = Start-Process `
+            -FilePath python `
+            -ArgumentList @("-u", "receiver/receiver.py") `
+            -WorkingDirectory $env:GITHUB_WORKSPACE `
+            -PassThru `
+            -RedirectStandardOutput receiver.log `
+            -RedirectStandardError receiver-error.log
+
+          try {
+            $receiverReady = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              try {
+                $null = Invoke-RestMethod `
+                  -Uri "http://127.0.0.1:9000/health" `
+                  -TimeoutSec 2
+                $receiverReady = $true
+                break
+              }
+              catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+
+            if (-not $receiverReady) {
+              Get-Content receiver-error.log -ErrorAction SilentlyContinue
+              throw "The local report receiver did not start."
+            }
+
+            python -m pytest -v --json-report --json-report-file=pytest-report.json
+            $testStatus = $LASTEXITCODE
+
+            python scripts/build_report.py --input pytest-report.json
+            $reportStatus = $LASTEXITCODE
+            if ($reportStatus -ne 0) {
+              $exitStatus = $reportStatus
+            }
+            else {
+              $exitStatus = $testStatus
+            }
+          }
+          finally {
+            Stop-Process -Id $receiver.Id -ErrorAction SilentlyContinue
+          }
+          exit $exitStatus
+
+      - name: Email test report
+        if: always() && hashFiles('test-report.json') != ''
+        env:
+          REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
+          REPORT_EMAIL_FROM: ${{ secrets.REPORT_EMAIL_FROM }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_USE_SSL: ${{ secrets.SMTP_USE_SSL }}
+        run: python scripts/send_email.py --report test-report.json
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.run_id }}
+          path: |
+            test-report.json
+            pytest-report.json
+            receiver.log
+            receiver-error.log
+          if-no-files-found: warn
+
+  deploy-pages:
+    if: needs.test.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload static demo
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy static demo
+        id: deployment
+        uses: actions/deploy-pages@v4
+</file>
+
+<file path="receiver/receiver.py">
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+import os
+from pathlib import Path
+
+REPORT_PATH = Path("test-report.json")
+MAX_REPORT_BYTES = 5 * 1024 * 1024
+
+
+class ReportHandler(BaseHTTPRequestHandler):
+    def _send_json(self, status_code, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path != "/health":
+            self._send_json(404, {"error": "Not found."})
+            return
+
+        self._send_json(200, {"status": "ready"})
+
+    def do_POST(self):
+        if self.path != "/report":
+            self._send_json(404, {"error": "Not found."})
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self._send_json(400, {"error": "A valid Content-Length is required."})
+            return
+
+        if length < 0:
+            self._send_json(400, {"error": "Content-Length cannot be negative."})
+            return
+        if length > MAX_REPORT_BYTES:
+            self._send_json(413, {"error": "Report exceeds the 5 MiB limit."})
+            return
+
+        try:
+            report = json.loads(self.rfile.read(length))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "Request body must be valid JSON."})
+            return
+
+        if not isinstance(report, dict):
+            self._send_json(400, {"error": "Report must be a JSON object."})
+            return
+
+        REPORT_PATH.write_text(
+            json.dumps(report, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._send_json(201, {"status": "saved", "path": str(REPORT_PATH)})
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("REPORT_RECEIVER_PORT", "9000"))
+    server = HTTPServer(("127.0.0.1", port), ReportHandler)
+    print(f"Report receiver listening on http://127.0.0.1:{port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping report receiver.")
+    finally:
+        server.server_close()
+</file>
+
+<file path="scripts/build_report.py">
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from urllib.request import Request, urlopen
+
+
+def create_report(pytest_data, metadata=None):
+    metadata = metadata or {}
+    tests = pytest_data.get("tests", [])
+    counts = {"total": len(tests), "passed": 0, "failed": 0, "skipped": 0}
+    pytest_exit_code = pytest_data.get("exitcode", 0)
+    results = []
+
+    for test in tests:
+        outcome = test.get("outcome", "unknown")
+        if outcome == "passed":
+            counts[outcome] += 1
+        elif outcome == "skipped":
+            counts[outcome] += 1
+        else:
+            counts["failed"] += 1
+
+        failure_message = None
+        for phase in ("call", "setup", "teardown"):
+            phase_result = test.get(phase, {})
+            if phase_result.get("outcome") in ("failed", "error"):
+                failure_message = phase_result.get("longrepr")
+                if failure_message is not None:
+                    failure_message = str(failure_message)
+                break
+
+        results.append(
+            {
+                "name": test.get("nodeid", "unknown"),
+                "result": outcome,
+                "failure_message": failure_message,
+            }
+        )
+
+    return {
+        "repository": metadata.get("repository", "local"),
+        "branch": metadata.get("branch", "local"),
+        "commit_sha": metadata.get("commit_sha", "unknown"),
+        "pipeline_run_id": metadata.get("pipeline_run_id", "local"),
+        "execution_timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": (
+            "failed"
+            if counts["failed"] or pytest_exit_code != 0
+            else "passed"
+        ),
+        "pytest_exit_code": pytest_exit_code,
+        "test_counts": counts,
+        "tests": results,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Send pytest results to the local JSON report receiver."
+    )
+    parser.add_argument(
+        "--input",
+        default="pytest-report.json",
+        help="pytest-json-report output file (default: pytest-report.json)",
+    )
+    parser.add_argument(
+        "--url",
+        default=os.environ.get(
+            "REPORT_RECEIVER_URL", "http://127.0.0.1:9000/report"
+        ),
+        help="report receiver endpoint",
+    )
+    args = parser.parse_args()
+
+    with open(args.input, encoding="utf-8") as report_file:
+        pytest_data = json.load(report_file)
+
+    metadata = {
+        "repository": os.environ.get("GITHUB_REPOSITORY", "local"),
+        "branch": os.environ.get(
+            "GITHUB_HEAD_REF", os.environ.get("GITHUB_REF_NAME", "local")
+        ),
+        "commit_sha": os.environ.get("GITHUB_SHA", "unknown"),
+        "pipeline_run_id": os.environ.get("GITHUB_RUN_ID", "local"),
+    }
+    report = create_report(pytest_data, metadata)
+    request = Request(
+        args.url,
+        data=json.dumps(report).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urlopen(request, timeout=10) as response:
+        if response.status != 201:
+            raise RuntimeError(
+                f"Report receiver returned unexpected HTTP status "
+                f"{response.status}."
+            )
+        print(response.read().decode("utf-8"))
+    print(
+        f"Sent {report['test_counts']['total']} test results "
+        f"({report['status']})."
+    )
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="scripts/send_email.py">
+import argparse
+from email.message import EmailMessage
+import json
+import os
+import smtplib
+import ssl
+
+
+def build_message(report, sender, recipients):
+    counts = report["test_counts"]
+    lines = [
+        f"Repository: {report['repository']}",
+        f"Branch: {report['branch']}",
+        f"Commit: {report['commit_sha']}",
+        f"Pipeline run: {report['pipeline_run_id']}",
+        f"Overall result: {report['status']}",
+        (
+            f"Tests: {counts['total']} total, {counts['passed']} passed, "
+            f"{counts['failed']} failed, {counts['skipped']} skipped"
+        ),
+        "",
+        "Individual results:",
+    ]
+
+    for test in report["tests"]:
+        lines.append(f"- {test['result']}: {test['name']}")
+        if test["failure_message"]:
+            lines.append(f"  {test['failure_message']}")
+
+    message = EmailMessage()
+    message["Subject"] = (
+        f"Test report: {report['status']} - "
+        f"{report['repository']} ({report['commit_sha'][:8]})"
+    )
+    message["From"] = sender
+    message["To"] = ", ".join(recipients)
+    message.set_content("\n".join(lines))
+    message.add_attachment(
+        json.dumps(report, indent=2).encode("utf-8"),
+        maintype="application",
+        subtype="json",
+        filename="test-report.json",
+    )
+    return message
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Email a JSON test report using SMTP."
+    )
+    parser.add_argument("--report", default="test-report.json")
+    args = parser.parse_args()
+
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_username = os.environ.get("SMTP_USERNAME")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    email_to = os.environ.get("REPORT_EMAIL_TO")
+
+    settings = (smtp_host, smtp_username, smtp_password, email_to)
+    if not any(settings):
+        print("Email report skipped: SMTP and recipient settings are not configured.")
+        return
+    if not all(settings):
+        raise ValueError(
+            "Set SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and REPORT_EMAIL_TO "
+            "together to enable email reports."
+        )
+
+    with open(args.report, encoding="utf-8") as report_file:
+        report = json.load(report_file)
+
+    recipients = [address.strip() for address in email_to.split(",") if address.strip()]
+    if not recipients:
+        raise ValueError("REPORT_EMAIL_TO must contain at least one email address.")
+
+    sender = os.environ.get("REPORT_EMAIL_FROM") or smtp_username
+    port = int(os.environ.get("SMTP_PORT") or "587")
+    use_ssl = os.environ.get("SMTP_USE_SSL", "").lower() == "true"
+    message = build_message(report, sender, recipients)
+    context = ssl.create_default_context()
+
+    if use_ssl:
+        with smtplib.SMTP_SSL(
+            smtp_host, port, timeout=20, context=context
+        ) as server:
+            server.login(smtp_username, smtp_password)
+            server.send_message(message)
+    else:
+        with smtplib.SMTP(smtp_host, port, timeout=20) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+            server.login(smtp_username, smtp_password)
+            server.send_message(message)
+
+    print(f"Test report emailed to {', '.join(recipients)}.")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="site/index.html">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="CSC418 assignment submission portal demo">
+    <title>CSC418 Assignment Submission Portal</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 40px 20px;
+            color: #1f2937;
+            background: #f4f7fb;
+            font-family: Arial, sans-serif;
+        }
+        main {
+            width: 100%;
+            max-width: 900px;
+            margin: auto;
+            padding: 30px;
+            border-radius: 12px;
+            background: #fff;
+            box-shadow: 0 4px 18px rgba(0, 0, 0, .08);
+        }
+        h1 { margin-bottom: 5px; color: #1d4ed8; }
+        .subtitle { margin-bottom: 30px; color: #6b7280; }
+        form { display: grid; gap: 10px; margin-bottom: 35px; }
+        label { margin-top: 8px; font-weight: bold; }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+        }
+        button {
+            margin-top: 15px;
+            padding: 13px;
+            border: 0;
+            border-radius: 6px;
+            color: white;
+            background: #2563eb;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #1d4ed8; }
+        .message { margin: 15px 0; padding: 12px; border-radius: 6px; }
+        .success { color: #166534; background: #dcfce7; }
+        .error { color: #991b1b; background: #fee2e2; }
+        .table-wrapper { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            text-align: left;
+        }
+        th { background: #f8fafc; }
+        a { color: #2563eb; }
+        @media (max-width: 600px) {
+            body { padding: 20px 12px; }
+            main { padding: 20px; }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>CSC418 Assignment Submission Portal</h1>
+    <p class="subtitle">DevOps Lab Midterm — static demonstration</p>
+
+    <form id="submission-form">
+        <label for="student-name">Student Name</label>
+        <input id="student-name" name="student_name" required>
+
+        <label for="registration-number">Registration Number</label>
+        <input id="registration-number" name="registration_number" required>
+
+        <label for="assignment-title">Assignment Title</label>
+        <input id="assignment-title" name="assignment_title" required>
+
+        <label for="submission-url">Submission URL</label>
+        <input id="submission-url" name="submission_url" type="url"
+               placeholder="https://github.com/..." required>
+
+        <button type="submit">Submit Assignment</button>
+    </form>
+
+    <div id="message" aria-live="polite"></div>
+    <h2>Saved Submissions</h2>
+    <div id="submissions"></div>
+</main>
+<script>
+    const storageKey = "csc418-submissions";
+    const form = document.querySelector("#submission-form");
+    const message = document.querySelector("#message");
+    const list = document.querySelector("#submissions");
+
+    function renderSubmissions() {
+        const submissions = JSON.parse(localStorage.getItem(storageKey) || "[]");
+        list.replaceChildren();
+        if (!submissions.length) {
+            list.textContent = "No submissions yet.";
+            return;
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "table-wrapper";
+        const table = document.createElement("table");
+        table.innerHTML = "<thead><tr><th>Name</th><th>Registration</th>" +
+            "<th>Assignment</th><th>URL</th></tr></thead><tbody></tbody>";
+        const body = table.querySelector("tbody");
+
+        for (const submission of submissions) {
+            const row = body.insertRow();
+            for (const value of [
+                submission.student_name,
+                submission.registration_number,
+                submission.assignment_title
+            ]) {
+                row.insertCell().textContent = value;
+            }
+            const linkCell = row.insertCell();
+            const link = document.createElement("a");
+            link.href = submission.submission_url;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = "Open";
+            linkCell.append(link);
+        }
+
+        wrapper.append(table);
+        list.append(wrapper);
+    }
+
+    form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const data = new FormData(form);
+        const url = String(data.get("submission_url")).trim();
+        let parsedUrl;
+        try {
+            parsedUrl = new URL(url);
+        } catch {
+            parsedUrl = null;
+        }
+
+        if (!parsedUrl || !["http:", "https:"].includes(parsedUrl.protocol)) {
+            message.className = "message error";
+            message.textContent = "Please enter a valid http/https URL.";
+            return;
+        }
+
+        const submissions = JSON.parse(localStorage.getItem(storageKey) || "[]");
+        submissions.push({
+            student_name: String(data.get("student_name")).trim(),
+            registration_number: String(data.get("registration_number")).trim(),
+            assignment_title: String(data.get("assignment_title")).trim(),
+            submission_url: url
+        });
+        localStorage.setItem(storageKey, JSON.stringify(submissions));
+        form.reset();
+        message.className = "message success";
+        message.textContent = "Submission saved successfully in this browser.";
+        renderSubmissions();
+    });
+
+    renderSubmissions();
+</script>
+</body>
+</html>
+</file>
+
+<file path="static/style.css">
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 40px 20px;
+    font-family: Arial, sans-serif;
+    background: #f4f7fb;
+    color: #1f2937;
+}
+
+.container {
+    width: 100%;
+    max-width: 900px;
+    margin: auto;
+    background: white;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+}
+
+h1 {
+    margin-bottom: 5px;
+    color: #1d4ed8;
+}
+
+.subtitle {
+    color: #6b7280;
+    margin-bottom: 30px;
+}
+
+form {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 35px;
+}
+
+label {
+    margin-top: 8px;
+    font-weight: bold;
+}
+
+input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+}
+
+button {
+    margin-top: 15px;
+    padding: 13px;
+    border: none;
+    background: #2563eb;
+    color: white;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:hover {
+    background: #1d4ed8;
+}
+
+.message {
+    padding: 12px;
+    margin: 15px 0;
+    border-radius: 6px;
+}
+
+.success {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.table-wrapper {
+    overflow-x: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th,
+td {
+    border-bottom: 1px solid #e5e7eb;
+    padding: 12px;
+    text-align: left;
+}
+
+th {
+    background: #f8fafc;
+}
+
+a {
+    color: #2563eb;
+}
+</file>
+
+<file path="templates/index.html">
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>CSC418 Submission Portal</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>CSC418 Assignment Submission Portal</h1>
+
+    <p class="subtitle">
+        DevOps Lab Midterm
+    </p>
+
+    {% if error %}
+        <div class="message error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    {% if success %}
+        <div class="message success" role="status">{{ success }}</div>
+    {% endif %}
+
+    <form method="POST">
+
+        <label>Student Name</label>
+
+        <input
+            type="text"
+            name="student_name"
+            placeholder="Enter student name"
+            required
+        >
+
+        <label>Registration Number</label>
+
+        <input
+            type="text"
+            name="registration_number"
+            placeholder="Enter registration number"
+            required
+        >
+
+        <label>Assignment Title</label>
+
+        <input
+            type="text"
+            name="assignment_title"
+            placeholder="Enter assignment title"
+            required
+        >
+
+        <label>Submission URL</label>
+
+        <input
+            type="url"
+            name="submission_url"
+            placeholder="https://github.com/..."
+            required
+        >
+
+        <button type="submit">
+            Submit Assignment
+        </button>
+
+    </form>
+
+
+    <h2>Saved Submissions</h2>
+
+    {% if submissions %}
+
+    <div class="table-wrapper">
+
+        <table>
+
+            <thead>
+
+                <tr>
+                    <th>Name</th>
+                    <th>Registration</th>
+                    <th>Assignment</th>
+                    <th>URL</th>
+                </tr>
+
+            </thead>
+
+            <tbody>
+
+                {% for submission in submissions %}
+
+                <tr>
+
+                    <td>
+                        {{ submission.student_name }}
+                    </td>
+
+                    <td>
+                        {{ submission.registration_number }}
+                    </td>
+
+                    <td>
+                        {{ submission.assignment_title }}
+                    </td>
+
+                    <td>
+
+                        <a
+                            href="{{ submission.submission_url }}"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            Open
+                        </a>
+
+                    </td>
+
+                </tr>
+
+                {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+    {% else %}
+
+        <p>No submissions yet.</p>
+
+    {% endif %}
+
+</div>
+
+</body>
+</html>
+</file>
+
+<file path="tests/test_app.py">
+import pytest
+from app import app, submissions
+
+
+@pytest.fixture
+def client():
+    app.config["TESTING"] = True
+
+    submissions.clear()
+
+    with app.test_client() as client:
+        yield client
+
+    submissions.clear()
+
+
+def test_valid_submission(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "Shahab Ahmed",
+            "registration_number": "CSC418-001",
+            "assignment_title": "DevOps Midterm",
+            "submission_url": "https://github.com/example/project",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(submissions) == 1
+    assert b"Submission saved successfully." in response.data
+
+
+def test_missing_required_field_shows_error(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "",
+            "registration_number": "CSC418-001",
+            "assignment_title": "DevOps Midterm",
+            "submission_url": "https://github.com/example/project",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Student Name is required." in response.data
+    assert len(submissions) == 0
+
+
+def test_missing_registration_number_shows_error(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "Shahab Ahmed",
+            "registration_number": "",
+            "assignment_title": "DevOps Midterm",
+            "submission_url": "https://github.com/example/project",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Registration Number is required." in response.data
+    assert len(submissions) == 0
+
+
+def test_missing_assignment_title_shows_error(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "Shahab Ahmed",
+            "registration_number": "CSC418-001",
+            "assignment_title": "",
+            "submission_url": "https://github.com/example/project",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Assignment Title is required." in response.data
+    assert len(submissions) == 0
+
+
+def test_missing_submission_url_shows_error(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "Shahab Ahmed",
+            "registration_number": "CSC418-001",
+            "assignment_title": "DevOps Midterm",
+            "submission_url": "",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Submission URL is required." in response.data
+    assert len(submissions) == 0
+
+
+def test_malformed_url_is_rejected(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "Shahab Ahmed",
+            "registration_number": "CSC418-001",
+            "assignment_title": "DevOps Midterm",
+            "submission_url": "http://:80",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Please enter a valid http/https URL." in response.data
+    assert len(submissions) == 0
+
+
+def test_url_with_invalid_port_is_rejected(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "Shahab Ahmed",
+            "registration_number": "CSC418-001",
+            "assignment_title": "DevOps Midterm",
+            "submission_url": "https://example.com:70000/project",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Please enter a valid http/https URL." in response.data
+    assert len(submissions) == 0
+
+
+def test_non_http_url_is_rejected(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "Shahab Ahmed",
+            "registration_number": "CSC418-001",
+            "assignment_title": "DevOps Midterm",
+            "submission_url": "ftp://example.com/project",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Please enter a valid http/https URL." in response.data
+    assert len(submissions) == 0
+
+
+def test_url_with_whitespace_is_rejected(client):
+    response = client.post(
+        "/",
+        data={
+            "student_name": "Shahab Ahmed",
+            "registration_number": "CSC418-001",
+            "assignment_title": "DevOps Midterm",
+            "submission_url": "http://exa mple.com",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Please enter a valid http/https URL." in response.data
+    assert len(submissions) == 0
+</file>
+
+<file path="tests/test_reports.py">
+import json
+from http.server import HTTPServer
+from threading import Thread
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+import pytest
+
+from receiver import receiver
+from scripts.build_report import create_report
+
+
+def test_report_summarizes_passed_and_failed_tests():
+    pytest_data = {
+        "tests": [
+            {"nodeid": "test_app.py::test_pass", "outcome": "passed"},
+            {
+                "nodeid": "test_app.py::test_fail",
+                "outcome": "failed",
+                "call": {
+                    "outcome": "failed",
+                    "longrepr": "assert 1 == 2",
+                },
+            },
+            {"nodeid": "test_app.py::test_skip", "outcome": "skipped"},
+        ]
+    }
+
+    report = create_report(
+        pytest_data,
+        {
+            "repository": "example/project",
+            "branch": "main",
+            "commit_sha": "abc123",
+            "pipeline_run_id": "42",
+        },
+    )
+
+    assert report["status"] == "failed"
+    assert report["repository"] == "example/project"
+    assert report["commit_sha"] == "abc123"
+    assert report["test_counts"] == {
+        "total": 3,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 1,
+    }
+    assert report["tests"][1]["failure_message"] == "assert 1 == 2"
+    assert report["execution_timestamp"]
+
+
+def test_report_marks_collection_error_as_failed():
+    report = create_report({"exitcode": 2, "tests": []})
+
+    assert report["status"] == "failed"
+    assert report["pytest_exit_code"] == 2
+
+
+def test_report_receiver_saves_json(tmp_path, monkeypatch):
+    output_path = tmp_path / "test-report.json"
+    monkeypatch.setattr(receiver, "REPORT_PATH", output_path)
+    server = HTTPServer(("127.0.0.1", 0), receiver.ReportHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        report = {"status": "passed", "test_counts": {"total": 1}}
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/report",
+            data=json.dumps(report).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 201
+
+        assert json.loads(output_path.read_text(encoding="utf-8")) == report
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_report_receiver_rejects_invalid_json():
+    server = HTTPServer(("127.0.0.1", 0), receiver.ReportHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/report",
+            data=b"not-json",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+</file>
+
+<file path=".gitignore">
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+pytest-report.json
+test-report.json
+receiver.log
+receiver-error.log
+</file>
+
+<file path="app.py">
+from flask import Flask, render_template, request
+from urllib.parse import urlparse
+
+app = Flask(__name__)
+
+# Lab ke liye simple in-memory storage
+submissions = []
+
+
+def valid_url(url):
+    """Check that URL starts with http/https and has a domain."""
+    try:
+        result = urlparse(url)
+        hostname = result.hostname
+        port = result.port
+        return (
+            result.scheme in ("http", "https")
+            and bool(hostname)
+            and not any(character.isspace() for character in url)
+            and (port is None or 1 <= port <= 65535)
+        )
+    except ValueError:
+        return False
+
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    error = None
+    success = None
+
+    if request.method == "POST":
+        student_name = request.form.get("student_name", "").strip()
+        registration_number = request.form.get(
+            "registration_number", ""
+        ).strip()
+        assignment_title = request.form.get(
+            "assignment_title", ""
+        ).strip()
+        submission_url = request.form.get("submission_url", "").strip()
+
+        # Required fields validation
+        if not student_name:
+            error = "Student Name is required."
+
+        elif not registration_number:
+            error = "Registration Number is required."
+
+        elif not assignment_title:
+            error = "Assignment Title is required."
+
+        elif not submission_url:
+            error = "Submission URL is required."
+
+        # URL validation
+        elif not valid_url(submission_url):
+            error = "Please enter a valid http/https URL."
+
+        else:
+            submission = {
+                "student_name": student_name,
+                "registration_number": registration_number,
+                "assignment_title": assignment_title,
+                "submission_url": submission_url,
+            }
+
+            submissions.append(submission)
+            success = "Submission saved successfully."
+
+    return render_template(
+        "index.html",
+        submissions=submissions,
+        error=error,
+        success=success,
+    )
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
+</file>
+
+<file path="README.md">
+# CSC418 Assignment Submission Portal
+
+A small Flask portal for assignment-link submissions, with automated tests, a
+local JSON report receiver, and GitHub Actions CI.
+
+## Run the portal
+
+On Windows PowerShell:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python app.py
+```
+
+Open <http://127.0.0.1:5000>. Students submit their name, registration number,
+assignment title, and an HTTP or HTTPS link. Required fields and the link are
+validated; accepted submissions appear in the list while the app is running.
+Submissions are intentionally stored in memory and reset when the app restarts.
+
+## Run tests and save a local report
+
+Install the requirements, then run these commands in two PowerShell terminals
+from the project folder.
+
+Terminal 1:
+
+```powershell
+python receiver\receiver.py
+```
+
+Terminal 2:
+
+```powershell
+pytest -v --json-report --json-report-file=pytest-report.json
+python scripts\build_report.py --input pytest-report.json
+```
+
+The receiver accepts reports only from the local machine and saves the enriched
+report as `test-report.json`. The report includes repository, branch, commit,
+pipeline run, execution time, overall status, test counts, individual results,
+and failure details. A failed test run still writes and sends its JSON report.
+The pytest command retains its non-zero exit status when tests fail.
+
+## Connect the project to GitHub
+
+This project folder is not currently connected to a GitHub repository. Create
+or choose an empty repository, then run these commands from the project folder
+(replace the URL with your repository's URL):
+
+```powershell
+git init -b main
+git add .
+git commit -m "Complete CSC418 assignment portal"
+git remote add origin https://github.com/<account>/<repository>.git
+git push -u origin main
+```
+
+## GitHub Actions
+
+The workflow runs on every push, pull request, and manual dispatch. It uses a
+self-hosted Windows runner so the localhost report receiver and its
+`test-report.json` run on your computer. To register the runner, open your
+GitHub repository's **Settings → Actions → Runners → New self-hosted runner**,
+select Windows, and follow GitHub's setup steps on this computer. Keep the
+runner online while pushing or triggering a workflow. Reports are also uploaded
+as workflow artifacts, including when tests fail.
+
+To demonstrate failure handling, temporarily introduce a defect in URL
+validation (for example, make `valid_url` accept every input), push the change,
+and inspect the failed test run and its `test-report.json` artifact. Restore URL
+validation and push again; the passing run produces a new report. Do not leave
+the intentional defect in the final revision.
+
+### Optional email reports
+
+Add these repository Actions secrets to email reports after both successful and
+failed test runs:
+
+- `REPORT_EMAIL_TO`: one or more comma-separated recipient addresses
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`
+- `REPORT_EMAIL_FROM`: optional sender address (defaults to `SMTP_USERNAME`)
+- `SMTP_USE_SSL`: optional `true` for implicit TLS (otherwise STARTTLS is used)
+
+Email contains the commit, run, overall result, test counts, and individual
+results; the complete JSON report is attached. SMTP credentials remain in
+Actions secrets. If no email settings are provided, the workflow reports that
+email delivery was skipped.
+
+### Optional GitHub Pages demo
+
+The `main` branch is deployed to GitHub Pages only after the test job passes.
+In the repository settings, enable **Pages → Build and deployment → GitHub
+Actions**. The deployed static demo stores its sample submissions in that
+browser's local storage; the Flask application remains the full server-backed
+portal. The workflow run's deployment step provides the published URL.
+
+## Project layout
+
+- `app.py`: Flask submission portal
+- `tests/`: portal, report-generation, and receiver tests
+- `scripts/build_report.py`: builds and sends the actual pytest report
+- `scripts/send_email.py`: optional SMTP report delivery
+- `receiver/receiver.py`: localhost JSON receiver
+- `.github/workflows/ci.yml`: CI, report artifact, optional email, and Pages deployment
+- `site/`: static Pages demonstration
+</file>
+
+<file path="requirements.txt">
+Flask
+pytest
+pytest-json-report
+</file>
+
+</files>

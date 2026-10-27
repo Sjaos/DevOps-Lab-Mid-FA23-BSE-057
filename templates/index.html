@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>CSC418 Submission Portal</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>CSC418 Assignment Submission Portal</h1>
+
+    <p class="subtitle">
+        DevOps Lab Midterm
+    </p>
+
+    {% if error %}
+        <div class="message error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    {% if success %}
+        <div class="message success" role="status">{{ success }}</div>
+    {% endif %}
+
+    <form method="POST">
+
+        <label>Student Name</label>
+
+        <input
+            type="text"
+            name="student_name"
+            placeholder="Enter student name"
+            required
+        >
+
+        <label>Registration Number</label>
+
+        <input
+            type="text"
+            name="registration_number"
+            placeholder="Enter registration number"
+            required
+        >
+
+        <label>Assignment Title</label>
+
+        <input
+            type="text"
+            name="assignment_title"
+            placeholder="Enter assignment title"
+            required
+        >
+
+        <label>Submission URL</label>
+
+        <input
+            type="url"
+            name="submission_url"
+            placeholder="https://github.com/..."
+            required
+        >
+
+        <button type="submit">
+            Submit Assignment
+        </button>
+
+    </form>
+
+
+    <h2>Saved Submissions</h2>
+
+    {% if submissions %}
+
+    <div class="table-wrapper">
+
+        <table>
+
+            <thead>
+
+                <tr>
+                    <th>Name</th>
+                    <th>Registration</th>
+                    <th>Assignment</th>
+                    <th>URL</th>
+                </tr>
+
+            </thead>
+
+            <tbody>
+
+                {% for submission in submissions %}
+
+                <tr>
+
+                    <td>
+                        {{ submission.student_name }}
+                    </td>
+
+                    <td>
+                        {{ submission.registration_number }}
+                    </td>
+
+                    <td>
+                        {{ submission.assignment_title }}
+                    </td>
+
+                    <td>
+
+                        <a
+                            href="{{ submission.submission_url }}"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            Open
+                        </a>
+
+                    </td>
+
+                </tr>
+
+                {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+    {% else %}
+
+        <p>No submissions yet.</p>
+
+    {% endif %}
+
+</div>
+
+</body>
+</html>
