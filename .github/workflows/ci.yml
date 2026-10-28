@@ -40,6 +40,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $exitStatus = 1
+          $receiver = $null
 
           $receiverPath = Join-Path `
             $env:GITHUB_WORKSPACE `
@@ -60,6 +61,7 @@ jobs:
 
           if (-not (Test-Path $receiverPath)) {
             Write-Host "Repository files:"
+
             Get-ChildItem `
               -Path $env:GITHUB_WORKSPACE `
               -Recurse |
@@ -91,8 +93,7 @@ jobs:
               Start-Sleep -Seconds 1
 
               if ($receiver.HasExited) {
-                Write-Host `
-                  "Receiver process exited with code $($receiver.ExitCode)."
+                Write-Host "Receiver process exited with code $($receiver.ExitCode)."
                 break
               }
 
@@ -109,8 +110,7 @@ jobs:
                 break
               }
               catch {
-                Write-Host `
-                  "Waiting for receiver: attempt $attempt of 30"
+                Write-Host "Waiting for receiver: attempt $attempt of 30"
               }
             }
 
@@ -146,6 +146,10 @@ jobs:
             $testStatus = $LASTEXITCODE
 
             Write-Host "Pytest exit code: $testStatus"
+
+            if (-not (Test-Path "pytest-report.json")) {
+              throw "pytest-report.json was not generated."
+            }
 
             python scripts/build_report.py `
               --input pytest-report.json
@@ -184,9 +188,7 @@ jobs:
             if (Test-Path $receiverErrorLog) {
               Copy-Item `
                 $receiverErrorLog `
-                (Join-Path `
-                  $env:GITHUB_WORKSPACE `
-                  "receiver-error.log") `
+                (Join-Path $env:GITHUB_WORKSPACE "receiver-error.log") `
                 -Force
             }
           }
@@ -205,8 +207,16 @@ jobs:
           SMTP_USE_SSL: ${{ secrets.SMTP_USE_SSL }}
         shell: powershell
         run: |
+          Write-Host "Sending test report email..."
+
           python scripts/send_email.py `
             --report test-report.json
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Email report could not be sent."
+          }
+
+          Write-Host "Email report sent successfully."
 
       - name: Upload test reports
         if: always()
