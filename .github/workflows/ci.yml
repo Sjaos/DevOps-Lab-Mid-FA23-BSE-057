@@ -107,8 +107,8 @@ jobs:
           if-no-files-found: warn
 
   deploy-pages:
-    if: needs.test.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
+    if: needs.test.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     runs-on: ubuntu-latest
 
@@ -116,6 +116,10 @@ jobs:
       contents: read
       pages: write
       id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Check out repository
