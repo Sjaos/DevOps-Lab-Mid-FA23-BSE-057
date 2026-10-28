@@ -50,8 +50,8 @@ This project is already connected to its GitHub repository. To publish changes,
 stage only the files you intend to include, then commit and push. For example:
 
 ```powershell
-git add .github/workflows/ci.yml README.md
-git commit -m "Stop CI artifact upload DNS errors"
+git add .github/workflows/ci.yml README.md pytest.ini tests/test_reports.py demo_tests/test_failure_email.py
+git commit -m "Add manual failing report email demo"
 git push
 ```
 
@@ -68,11 +68,18 @@ tests fail. The GitHub artifact-upload step is omitted because your runner
 cannot resolve GitHub's artifact service (`ENOTFOUND`); this does not affect
 test execution or saving the local report.
 
-To demonstrate failure handling, temporarily introduce a defect in URL
-validation (for example, make `valid_url` accept every input), push the change,
-and inspect `test-report.json` on the runner computer. Restore URL validation
-and push again; the passing run produces a new report. Do not leave the
-intentional defect in the final revision.
+To email yourself an example of a failed test report without changing the
+portal or breaking normal test runs:
+
+1. Open **Actions → Assignment Portal CI → Run workflow** on the `main` branch.
+2. Select **Send a deliberate failing-test report email** and start the run.
+3. The workflow adds one dedicated failing test, saves and emails the report,
+   and is expected to show a red failed-test result.
+4. Run the workflow again with the option unchecked to get a normal passing
+   result.
+
+The demo test is not collected by normal pushes or pull requests. The failed
+email is sent only to the configured `REPORT_EMAIL_TO` address.
 
 ### Optional email reports
 
@@ -108,6 +115,8 @@ portal. The workflow run's deployment step provides the published URL.
 
 - `app.py`: Flask submission portal
 - `tests/`: portal, report-generation, and receiver tests
+- `demo_tests/`: deliberate test used only for the manual failure-email demo
+- `pytest.ini`: keeps the demo test out of regular runs
 - `scripts/build_report.py`: builds and sends the actual pytest report
 - `scripts/send_email.py`: optional SMTP report delivery
 - `receiver/receiver.py`: localhost JSON receiver

@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      failure_demo:
+        description: Send a deliberate failing-test report email
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -36,6 +42,7 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           REPORT_RECEIVER_URL: http://127.0.0.1:9000/report
+          FAILURE_DEMO: ${{ inputs.failure_demo }}
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -138,10 +145,21 @@ jobs:
 
             Write-Host "Local report receiver started successfully."
 
-            python -m pytest `
-              -v `
-              --json-report `
-              --json-report-file=pytest-report.json
+            $pytestArgs = @(
+              "-m",
+              "pytest",
+              "-v",
+              "--json-report",
+              "--json-report-file=pytest-report.json",
+              "tests"
+            )
+
+            if ($env:FAILURE_DEMO -eq "true") {
+              Write-Host "Failure demo enabled; adding its deliberate failing test."
+              $pytestArgs += "demo_tests/test_failure_email.py"
+            }
+
+            python @pytestArgs
 
             $testStatus = $LASTEXITCODE
 

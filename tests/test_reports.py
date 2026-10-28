@@ -8,6 +8,7 @@ import pytest
 
 from receiver import receiver
 from scripts.build_report import create_report
+from scripts.send_email import build_message
 
 
 def test_report_summarizes_passed_and_failed_tests():
@@ -54,6 +55,36 @@ def test_report_marks_collection_error_as_failed():
 
     assert report["status"] == "failed"
     assert report["pytest_exit_code"] == 2
+
+
+def test_failure_report_email_contains_failure_details():
+    report = create_report(
+        {
+            "tests": [
+                {
+                    "nodeid": (
+                        "demo_tests/test_failure_email.py::"
+                        "test_failure_demo_for_email_report"
+                    ),
+                    "outcome": "failed",
+                    "call": {
+                        "outcome": "failed",
+                        "longrepr": "Intentional failure demo",
+                    },
+                }
+            ]
+        }
+    )
+
+    message = build_message(report, "sender@example.com", ["recipient@example.com"])
+    body = message.get_body().get_content()
+
+    assert "Test report: failed" in message["Subject"]
+    assert "Overall result: failed" in body
+    assert "test_failure_demo_for_email_report" in body
+    assert "Intentional failure demo" in body
+    assert message.get_filename() is None
+    assert any(part.get_filename() == "test-report.json" for part in message.iter_attachments())
 
 
 def test_report_receiver_saves_json(tmp_path, monkeypatch):
