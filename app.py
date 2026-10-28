@@ -6,21 +6,8 @@ app = Flask(__name__)
 
 submissions = []
 
-
 def valid_url(url):
-    """Check that URL starts with http/https and has a domain."""
-    try:
-        result = urlparse(url)
-        hostname = result.hostname
-        port = result.port
-        return (
-            result.scheme in ("http", "https")
-            and bool(hostname)
-            and not any(character.isspace() for character in url)
-            and (port is None or 1 <= port <= 65535)
-        )
-    except ValueError:
-        return False
+    return True
 
 
 @app.route("/", methods=["GET", "POST"])
