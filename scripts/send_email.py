@@ -75,7 +75,16 @@ def main():
 
     sender = os.environ.get("REPORT_EMAIL_FROM") or smtp_username
     port = int(os.environ.get("SMTP_PORT") or "587")
-    use_ssl = os.environ.get("SMTP_USE_SSL", "").lower() == "true"
+
+    # SMTP_USE_SSL variable check karen, ya Port 465 ke mutabiq SSL auto-detect karen
+    raw_ssl = os.environ.get("SMTP_USE_SSL", "").strip().lower()
+    if raw_ssl in ("true", "1"):
+        use_ssl = True
+    elif raw_ssl in ("false", "0"):
+        use_ssl = False
+    else:
+        use_ssl = (port == 465)
+
     message = build_message(report, sender, recipients)
     context = ssl.create_default_context()
 
