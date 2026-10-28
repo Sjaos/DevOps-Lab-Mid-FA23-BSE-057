@@ -44,18 +44,15 @@ pipeline run, execution time, overall status, test counts, individual results,
 and failure details. A failed test run still writes and sends its JSON report.
 The pytest command retains its non-zero exit status when tests fail.
 
-## Connect the project to GitHub
+## Push changes to GitHub
 
-This project folder is not currently connected to a GitHub repository. Create
-or choose an empty repository, then run these commands from the project folder
-(replace the URL with your repository's URL):
+This project is already connected to its GitHub repository. To publish changes,
+stage only the files you intend to include, then commit and push. For example:
 
 ```powershell
-git init -b main
-git add .
-git commit -m "Complete CSC418 assignment portal"
-git remote add origin https://github.com/<account>/<repository>.git
-git push -u origin main
+git add .github/workflows/ci.yml README.md
+git commit -m "Stop CI artifact upload DNS errors"
+git push
 ```
 
 ## GitHub Actions
@@ -65,14 +62,17 @@ self-hosted Windows runner so the localhost report receiver and its
 `test-report.json` run on your computer. To register the runner, open your
 GitHub repository's **Settings → Actions → Runners → New self-hosted runner**,
 select Windows, and follow GitHub's setup steps on this computer. Keep the
-runner online while pushing or triggering a workflow. Reports are also uploaded
-as workflow artifacts, including when tests fail.
+runner online while pushing or triggering a workflow. The runner saves
+`test-report.json` directly in its checked-out project folder, including when
+tests fail. The GitHub artifact-upload step is omitted because your runner
+cannot resolve GitHub's artifact service (`ENOTFOUND`); this does not affect
+test execution or saving the local report.
 
 To demonstrate failure handling, temporarily introduce a defect in URL
 validation (for example, make `valid_url` accept every input), push the change,
-and inspect the failed test run and its `test-report.json` artifact. Restore URL
-validation and push again; the passing run produces a new report. Do not leave
-the intentional defect in the final revision.
+and inspect `test-report.json` on the runner computer. Restore URL validation
+and push again; the passing run produces a new report. Do not leave the
+intentional defect in the final revision.
 
 ### Optional email reports
 
@@ -83,6 +83,13 @@ failed test runs:
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`
 - `REPORT_EMAIL_FROM`: optional sender address (defaults to `SMTP_USERNAME`)
 - `SMTP_USE_SSL`: optional `true` for implicit TLS (otherwise STARTTLS is used)
+
+For Gmail, use `smtp.gmail.com` as `SMTP_HOST`, port `587`, and `false` for
+`SMTP_USE_SSL` (STARTTLS). `SMTP_USERNAME` and `REPORT_EMAIL_FROM` should be
+the Gmail address. Use a Google App Password for `SMTP_PASSWORD`, not the
+account's regular password. Store each value under **Repository Settings →
+Secrets and variables → Actions**. The self-hosted runner must also be able to
+resolve `smtp.gmail.com` and connect to the selected SMTP port.
 
 Email contains the commit, run, overall result, test counts, and individual
 results; the complete JSON report is attached. SMTP credentials remain in
@@ -104,7 +111,7 @@ portal. The workflow run's deployment step provides the published URL.
 - `scripts/build_report.py`: builds and sends the actual pytest report
 - `scripts/send_email.py`: optional SMTP report delivery
 - `receiver/receiver.py`: localhost JSON receiver
-- `.github/workflows/ci.yml`: CI, report artifact, optional email, and Pages deployment
+- `.github/workflows/ci.yml`: CI, local report, optional email, and Pages deployment
 - `site/`: static Pages demonstration
 
 ## Student Information
@@ -112,5 +119,3 @@ portal. The workflow run's deployment step provides the published URL.
 - Name: Shahab Ahmed
 - Registration Number: FA23-BSE-057
 -Updated on 2026-10-28
-
-

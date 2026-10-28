@@ -218,18 +218,6 @@ jobs:
 
           Write-Host "Email report sent successfully."
 
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports-${{ github.run_id }}
-          path: |
-            test-report.json
-            pytest-report.json
-            receiver.log
-            receiver-error.log
-          if-no-files-found: warn
-
   deploy-pages:
     needs: test
     if: needs.test.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
