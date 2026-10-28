@@ -107,4 +107,9 @@ portal. The workflow run's deployment step provides the published URL.
 - `.github/workflows/ci.yml`: CI, report artifact, optional email, and Pages deployment
 - `site/`: static Pages demonstration
 
+## Student Information
+
+- Name: Shahab Ahmed
+- Registration Number: FA23-BSE-057
+
 
